@@ -89,9 +89,9 @@ class MacroService : AccessibilityService() {
         val v = TextView(this)
         v.text = m.name.take(5); v.gravity = Gravity.CENTER
         v.setTextColor(Color.WHITE); v.textSize = 12f
-        v.background = GradientDrawable().also {
-            it.shape = GradientDrawable.OVAL; it.setColor(0xFF1E88E5.toInt()); it.setStroke(4, Color.WHITE)
-        }
+        val bg = GradientDrawable()
+        bg.shape = GradientDrawable.OVAL; bg.setColor(0xFF1E88E5.toInt()); bg.setStroke(4, Color.WHITE)
+        v.background = bg
         v.alpha = m.alpha / 100f
         val p = lp(m.btnSize, m.btnSize); p.x = m.btnX; p.y = m.btnY
         var sx = 0f; var sy = 0f; var out = false
@@ -108,7 +108,7 @@ class MacroService : AccessibilityService() {
                 }
             } else {
                 when (e.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> { sx = e.rawX; sy = e.rawY; out = false; down(m) }
+                    MotionEvent.ACTION_DOWN -> { sx = e.rawX; sy = e.rawY; out = false; bg.setColor(0xFFFFA000.toInt()); v.alpha = 1f; down(m) }
                     MotionEvent.ACTION_MOVE -> if (m.mode == 2 && !out) {
                         if (m.dynamic) {
                             // Nút động: nút đi theo ngón tay, độ lệch được chuyển thành vuốt tâm
@@ -125,6 +125,7 @@ class MacroService : AccessibilityService() {
                         }
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        bg.setColor(0xFF1E88E5.toInt()); v.alpha = m.alpha / 100f
                         if (m.mode == 2) runners[m.id]?.stop()
                         if (m.dynamic) { p.x = m.btnX; p.y = m.btnY; wm.updateViewLayout(v, p) }
                     }
@@ -197,14 +198,23 @@ class MacroService : AccessibilityService() {
     inner class Runner(val m: Macro) {
         var running = false
         var ax = 0f; var ay = 0f
-        private var i = 0; private var n = 0; private var fails = 0; private var gen = 0
+        private var i = 0; private var n = 0; private var sub = 0; private var fails = 0; private var gen = 0
         private var stroke: StrokeDescription? = null
         private var lx = 0f; private var ly = 0f
         private val aim get() = m.dynamic && m.mode == 2
 
+        /** Các bước có "cùng lúc" liền sau bước i được gộp vào một cử chỉ nhiều ngón */
+        private fun groupEnd(a: Int): Int {
+            if (m.steps[a].type == "CLICK") return a
+            var j = a
+            while (j + 1 < m.steps.size && m.steps[j + 1].together && m.steps[j + 1].type != "CLICK") j++
+            return j
+        }
+        private fun cycles(s: Step) = maxOf(1L, s.dur / maxOf(1L, s.hold + s.gap)).toInt()
+
         fun start() {
             if (running || m.steps.isEmpty()) return
-            running = true; gen++; i = 0; n = 0; fails = 0; ax = 0f; ay = 0f; stroke = null
+            running = true; gen++; i = 0; n = 0; sub = 0; fails = 0; ax = 0f; ay = 0f; stroke = null
             step()
         }
 
@@ -224,19 +234,29 @@ class MacroService : AccessibilityService() {
             if (!running) return
             val my = gen
             try {
-                val s = m.steps[i]
                 val dm = resources.displayMetrics
                 val b = GestureDescription.Builder()
                 var cnt = 0
-                val dur = s.dur.coerceIn(1L, 60000L)
-                val g = (s.dur + s.delay).coerceIn(16L, 60000L)
-
-                when (s.type) {
-                    "TAP" -> { b.addStroke(StrokeDescription(Path().also { it.moveTo(s.x, s.y) }, 0L, dur)); cnt++ }
-                    "SWIPE" -> {
-                        b.addStroke(StrokeDescription(Path().also { it.moveTo(s.x, s.y); it.lineTo(s.x2, s.y2) }, 0L, dur)); cnt++
+                var g = 16L
+                val j = groupEnd(i)
+                for (k in i..j) {
+                    val s = m.steps[k]
+                    if (s.type == "CLICK") {
+                        val hold = s.hold.coerceIn(1L, 60000L)
+                        b.addStroke(StrokeDescription(Path().also { it.moveTo(s.x, s.y) }, 0L, hold)); cnt++
+                        g = maxOf(g, s.hold + s.gap)
+                    } else {
+                        val dur = s.dur.coerceIn(1L, 60000L)
+                        when (s.type) {
+                            "TAP" -> { b.addStroke(StrokeDescription(Path().also { it.moveTo(s.x, s.y) }, 0L, dur)); cnt++ }
+                            "SWIPE" -> {
+                                b.addStroke(StrokeDescription(Path().also { it.moveTo(s.x, s.y); it.lineTo(s.x2, s.y2) }, 0L, dur)); cnt++
+                            }
+                        }
+                        g = maxOf(g, s.dur + s.delay)
                     }
                 }
+                g = g.coerceIn(16L, 60000L)
 
                 if (aim) {
                     val tx = (m.anchorX + ax * m.sens).coerceIn(0f, dm.widthPixels - 1f)
@@ -267,7 +287,13 @@ class MacroService : AccessibilityService() {
         private fun advance(my: Int) {
             if (my != gen || !running) return
             fails = 0
-            i++
+            val s = m.steps[i]
+            if (s.type == "CLICK") {
+                sub++
+                if (sub < cycles(s)) { step(); return }
+                sub = 0
+            }
+            i = groupEnd(i) + 1
             if (i >= m.steps.size) {
                 i = 0; n++
                 if (m.mode != 2 && (m.mode == 0 && n >= maxOf(m.loops, 1) || m.mode == 1 && m.loops > 0 && n >= m.loops)) {

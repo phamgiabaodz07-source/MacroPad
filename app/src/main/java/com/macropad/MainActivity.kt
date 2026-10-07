@@ -2,6 +2,8 @@ package com.macropad
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
@@ -17,6 +19,7 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import java.util.Collections
+import org.json.JSONObject
 
 class MainActivity : Activity() {
 
@@ -83,6 +86,7 @@ class MainActivity : Activity() {
             else { s.startEdit(); moveTaskToBack(true) }
         })
         r.addView(btn("+ Tạo macro mới") { isNew = true; showEditor(Macro()) })
+        r.addView(btn("⬇ Nhập macro (dán mã)") { importDialog() })
 
         r.addView(tv("Danh sách macro (${macros.size})", 18f))
         macros.forEach { m ->
@@ -100,7 +104,42 @@ class MainActivity : Activity() {
                         .setNegativeButton("Huỷ", null).show()
                 }
             ))
+            r.addView(rowOf(
+                btn("Đổi tên") { renameDialog(m) },
+                btn("Chia sẻ") { shareMacro(m) }
+            ))
         }
+    }
+
+    private fun renameDialog(m: Macro) {
+        val e = edit(m.name)
+        AlertDialog.Builder(this).setTitle("Đổi tên").setView(e)
+            .setPositiveButton("OK") { _, _ -> m.name = e.text.toString().ifBlank { m.name }; saveAll(); showList() }
+            .setNegativeButton("Huỷ", null).show()
+    }
+
+    private fun shareMacro(m: Macro) {
+        val code = m.toJson().toString()
+        (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("macro", code))
+        toast("Đã sao chép mã macro")
+        startActivity(Intent.createChooser(
+            Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, code), "Chia sẻ macro"))
+    }
+
+    private fun importDialog() {
+        val e = edit("")
+        e.setSingleLine(false); e.minLines = 4
+        val cb = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cb.primaryClip?.let { if (it.itemCount > 0) e.setText(it.getItemAt(0).text ?: "") }
+        AlertDialog.Builder(this).setTitle("Dán mã macro").setView(e)
+            .setPositiveButton("Nhập") { _, _ ->
+                try {
+                    val c = Macro.from(JSONObject(e.text.toString().trim()))
+                    c.id = System.currentTimeMillis().toString()
+                    macros.add(c); saveAll(); showList()
+                } catch (x: Exception) { toast("Mã macro không hợp lệ") }
+            }
+            .setNegativeButton("Huỷ", null).show()
     }
 
     // ---------- trình chỉnh macro ----------
@@ -158,6 +197,7 @@ class MainActivity : Activity() {
             ))
         }
         r.addView(btn("+ Thêm bước") { collect(); val s = Step(); stepDialog(s) { m.steps.add(s); showEditor(m) } })
+        r.addView(btn("+ Chạm liên tục (full auto)") { collect(); val s = Step(type = "CLICK", dur = 1000L, delay = 0L); stepDialog(s) { m.steps.add(s); showEditor(m) } })
         r.addView(btn("⏺ Ghi thao tác (thay các bước hiện có)") {
             val svc = MacroService.instance
             if (svc == null) toast("Hãy bật dịch vụ trợ năng trước")
@@ -178,10 +218,14 @@ class MainActivity : Activity() {
         ))
     }
 
-    private fun describe(s: Step) = when (s.type) {
-        "SWIPE" -> "VUỐT (${n(s.x)},${n(s.y)})→(${n(s.x2)},${n(s.y2)}) ${s.dur}ms, chờ ${s.delay}ms"
-        "WAIT" -> "CHỜ ${s.dur}ms, thêm ${s.delay}ms"
-        else -> "CHẠM/GIỮ (${n(s.x)},${n(s.y)}) giữ ${s.dur}ms, chờ ${s.delay}ms"
+    private fun describe(s: Step): String {
+        val t = when (s.type) {
+            "SWIPE" -> "VUỐT (${n(s.x)},${n(s.y)})→(${n(s.x2)},${n(s.y2)}) ${s.dur}ms, chờ ${s.delay}ms"
+            "WAIT" -> "CHỜ ${s.dur}ms, thêm ${s.delay}ms"
+            "CLICK" -> "CHẠM LIÊN TỤC (${n(s.x)},${n(s.y)}) tổng ${s.dur}ms, chạm ${s.hold}ms, nghỉ ${s.gap}ms"
+            else -> "CHẠM/GIỮ (${n(s.x)},${n(s.y)}) giữ ${s.dur}ms, chờ ${s.delay}ms"
+        }
+        return if (s.together) "⫘ cùng lúc · $t" else t
     }
 
     private fun pick(ex: EditText, ey: EditText) {
@@ -194,19 +238,23 @@ class MainActivity : Activity() {
     private fun stepDialog(s: Step, done: () -> Unit) {
         val l = LinearLayout(this)
         l.orientation = LinearLayout.VERTICAL; l.setPadding(dp(16), dp(8), dp(16), 0)
-        val types = arrayOf("TAP", "SWIPE", "WAIT")
+        val types = arrayOf("TAP", "SWIPE", "WAIT", "CLICK")
         val type = Spinner(this)
-        type.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, arrayOf("TAP – chạm / giữ", "SWIPE – vuốt", "WAIT – chờ"))
+        type.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, arrayOf("TAP – chạm / giữ", "SWIPE – vuốt", "WAIT – chờ", "CLICK – chạm liên tục"))
         type.setSelection(types.indexOf(s.type).coerceAtLeast(0)); l.addView(type)
 
         val x = num(n(s.x)); val y = num(n(s.y)); val x2 = num(n(s.x2)); val y2 = num(n(s.y2))
         val dur = num(s.dur.toString()); val delay = num(s.delay.toString())
+        val hold = num(s.hold.toString()); val gap = num(s.gap.toString())
+        val tog = CheckBox(this); tog.text = "Chạy cùng lúc với bước trước (thêm 1 ngón tay)"; tog.isChecked = s.together
         l.addView(tv("Điểm 1 (X, Y)")); l.addView(rowOf(x, y))
         l.addView(btn("Chọn điểm 1 trên màn hình") { pick(x, y) })
         l.addView(tv("Điểm 2 (chỉ cho VUỐT)")); l.addView(rowOf(x2, y2))
         l.addView(btn("Chọn điểm 2 trên màn hình") { pick(x2, y2) })
-        l.addView(tv("Thời gian giữ / vuốt / chờ (ms)")); l.addView(dur)
+        l.addView(tv("Thời gian giữ / vuốt / chờ (ms). Với CLICK: tổng thời lượng")); l.addView(dur)
         l.addView(tv("Chờ sau bước này (ms)")); l.addView(delay)
+        l.addView(tv("Chỉ cho CLICK: mỗi lần chạm / nghỉ giữa hai lần (ms)")); l.addView(rowOf(hold, gap))
+        l.addView(tog)
 
         AlertDialog.Builder(this).setTitle("Bước")
             .setView(ScrollView(this).also { it.addView(l) })
@@ -218,6 +266,9 @@ class MainActivity : Activity() {
                 s.y2 = y2.text.toString().toFloatOrNull() ?: s.y2
                 s.dur = (dur.text.toString().toLongOrNull() ?: 40L).coerceAtLeast(1L)
                 s.delay = (delay.text.toString().toLongOrNull() ?: 60L).coerceAtLeast(0L)
+                s.hold = (hold.text.toString().toLongOrNull() ?: 50L).coerceAtLeast(1L)
+                s.gap = (gap.text.toString().toLongOrNull() ?: 50L).coerceAtLeast(0L)
+                s.together = tog.isChecked
                 done()
             }
             .setNegativeButton("Huỷ", null).show()

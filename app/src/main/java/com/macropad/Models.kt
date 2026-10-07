@@ -4,24 +4,26 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** type: TAP (chạm/giữ), SWIPE (vuốt), WAIT (chờ). dur = thời gian giữ/vuốt/chờ, delay = chờ sau bước (ms) */
+/** type: TAP (chạm/giữ), SWIPE (vuốt), WAIT (chờ), CLICK (chạm liên tục: dur=tổng, hold=mỗi lần chạm, gap=nghỉ). together=chạy cùng lúc với bước trước. dur = thời gian giữ/vuốt/chờ, delay = chờ sau bước (ms) */
 class Step(
     var type: String = "TAP",
     var x: Float = 500f, var y: Float = 500f,
     var x2: Float = 500f, var y2: Float = 500f,
-    var dur: Long = 40L, var delay: Long = 60L
+    var dur: Long = 40L, var delay: Long = 60L,
+    var hold: Long = 50L, var gap: Long = 50L, var together: Boolean = false
 ) {
     fun toJson(): JSONObject = JSONObject().put("t", type)
         .put("x", x.toDouble()).put("y", y.toDouble())
         .put("x2", x2.toDouble()).put("y2", y2.toDouble())
-        .put("d", dur).put("w", delay)
+        .put("d", dur).put("w", delay).put("h", hold).put("g", gap).put("tg", together)
 
     companion object {
         fun from(o: JSONObject) = Step(
             o.optString("t", "TAP"),
             o.optDouble("x").toFloat(), o.optDouble("y").toFloat(),
             o.optDouble("x2").toFloat(), o.optDouble("y2").toFloat(),
-            o.optLong("d", 40), o.optLong("w", 60)
+            o.optLong("d", 40), o.optLong("w", 60),
+            o.optLong("h", 50), o.optLong("g", 50), o.optBoolean("tg")
         )
     }
 }
